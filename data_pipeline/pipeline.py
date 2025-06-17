@@ -1,4 +1,5 @@
 import yaml
+import pandas as pd
 from typing import Dict, Any, Optional
 from .loader import DataLoader
 from .cleaner import DataCleaner
@@ -6,13 +7,12 @@ from .preprocessor import TextPreprocessor
 from .formatter import DataFormatter
 from .splitter import DataSplitter
 from .tokenizer_handler import TokenizerHandler
-from .validator import DatasetValidator
 from .saver import DataSaver
 
 class DataPipeline:
     """Main pipeline orchestrator"""
     
-    def __init__(self, config: Optional[Dict[str, Any]] = None, config_path: Optional[str] = None, task: Optional[str] = "qa", dataset_name: Optional[str] = None):
+    def __init__(self, config: Optional[Dict[str, Any]] = None, config_path: Optional[str] = None, task: Optional[str] = "qa", dataset_name: Optional[str] = "Unknown"):
         """
         Initialize the data pipeline
         
@@ -31,12 +31,11 @@ class DataPipeline:
             # Default configuration
             self.config = self._get_default_config()
 
-        self.task = task  # Store the task (either 'qa' or 'summarization')
+        self.task = self.task = self.config.get('model', {}).get('task','qa')  # Store the task (either 'qa' or 'summarization')
         self.dataset_name = dataset_name  # Store the dataset name
 
         # Initialize all components with the task information
         self.loader = DataLoader(self.config, task=self.task)
-        self.validator = DatasetValidator(self.config, task=self.task)
         self.cleaner = DataCleaner(self.config)
         self.preprocessor = TextPreprocessor(self.config)
         self.formatter = DataFormatter(self.config)
@@ -46,8 +45,9 @@ class DataPipeline:
 
         # Store processing statistics
         self.stats = {}
+    
         
-    def run(self, dataset_name: Optional[str] = None) -> Dict[str, Any]:
+    def run(self, dataset_name: Optional[str] = None,df: Optional[pd.DataFrame]=None) -> Dict[str, Any]:
         """
         Run the complete pipeline
         
@@ -69,21 +69,20 @@ class DataPipeline:
         try:
             # Step 1: Load data
             print(f"Step 1: Loading dataset '{dataset_to_use}' for task '{self.task}'...")
-            raw_data = self.loader.load(dataset_name=dataset_to_use)
-            loader_stats = self.loader.get_info(raw_data)
-            self.stats.update(loader_stats)
+            if df is not None:
+                # If a DataFrame is provided, use it directly
+                print("Using provided DataFrame for processing...")
+                raw_data = df
 
-            # Step 1.5: Validate dataset
-            print("Step 1.5: Validating dataset...")
-            validation_result = self.validator.validate_dataset(dataset_features=set(loader_stats['columns']))
-            self.stats['validation_result'] = validation_result['is_valid']
-            self.stats['validation_warnings'] = validation_result.get('warnings', [])
+                self.loader.validate_dataframe(raw_data)
+                raw_data = self.loader.format_dataframe(raw_data)
+                loader_stats = self.loader.get_info(raw_data)
+                self.stats.update(loader_stats)
+            else: 
+                raw_data = self.loader.load(dataset_name=dataset_to_use)
+                loader_stats = self.loader.get_info(raw_data)
+                self.stats.update(loader_stats)
 
-            print(f"Dataset validation result: {validation_result['is_valid']}")
-            if not validation_result['is_valid']:
-                raise ValueError(f"Dataset schema validation failed: {validation_result['error_message']}")
-
-            # Step 2: Clean data
             print("Step 2: Cleaning data...")
             original_data = raw_data.copy()
             cleaned_data = self.cleaner.clean(raw_data)
@@ -151,10 +150,6 @@ class DataPipeline:
         """
         steps = {
             'load': lambda: self.loader.load(dataset_name=self.dataset_name),
-            'validate': lambda: self.validator.validate_dataset(
-                dataset_features=set(input_data.columns) if input_data is not None else set(),
-                task_type=self.task
-            ),
             'clean': lambda data: self.cleaner.clean(data),
             'preprocess': lambda data: self.preprocessor.process(data),
             'format': lambda data: self.formatter.format(data),
